@@ -39,7 +39,7 @@
 static volatile unsigned *gpio;
 static int fd;
 
-static int mode = 0, bits = 8, speed = 4000000;
+static int mode = 0, bits = 8, speed = 400000;//4000000;
 
 
 void spi_init(void)
@@ -64,7 +64,7 @@ void spi_init(void)
 	}
 	mem_fd = open("/dev/mem",O_RDWR|O_SYNC);
 	if (mem_fd < 0) {
-		perror("FATAL, /dev/mem trouble (must be root)");
+		perror("FATAL, /dev/mem trouble (must be roor)");
 		exit(1);
 	}
 	gpio = mmap(0,4096,PROT_READ|PROT_WRITE,MAP_SHARED,mem_fd,0x20200000);

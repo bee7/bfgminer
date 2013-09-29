@@ -36,61 +36,20 @@
 
 #define BITFURY_API_STATS 300
 
-struct bitfury_payload {
-	unsigned char midstate[32];
-	unsigned int junk[8];
-	unsigned m7;
-	unsigned ntime;
-	unsigned nbits;
-	unsigned nnonce;
-};
-
-struct bitfury_device {
-	unsigned osc6_req;
-	unsigned osc6_bits;
-	unsigned osc6_bits_setpoint;
-	unsigned newbuf[17];
-	unsigned oldbuf[17];
-	struct work * work;
-	struct work * owork;
-	struct work * o2work;
-	int job_switched;
-	struct bitfury_payload payload;
-	struct bitfury_payload opayload;
-	struct bitfury_payload o2payload;
-	unsigned int results[16];
-	int results_n;
-	time_t stat_ts[BITFURY_STAT_N];
-	unsigned int stat_counter;
-	unsigned int future_nonce[16];
-	unsigned int old_nonce[16];
-	int future_num;
-	int old_num;
-	struct timespec timer1;
-	struct timespec otimer1;
-	struct timespec ts1;
-	struct timespec predict1;
-	int rate; //per msec
-	int osc_slow;
-	int osc_fast;
-	unsigned slot;
-	unsigned fasync;
-	unsigned hw_errors;
-	unsigned int matching_work;
-	unsigned int nonces[32];
-	int current_nonce;
-	unsigned atrvec[20];
-};
+struct bitfury_device;
+struct bitfury_payload;
+struct work;
 
 int libbitfury_readHashData(unsigned int *res);
 void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, int chip_n);
 void work_to_payload(struct bitfury_payload *p, struct work *w);
 struct timespec t_diff(struct timespec start, struct timespec end);
-int libbitfury_detectChips(struct bitfury_device *devices);
+int libbitfury_detectChips(struct bitfury_device **devices);
 int libbitfury_shutdownChips(struct bitfury_device *devices, int chip_n);
 void send_reinit(int slot, int chip_n, int n);
 void send_freq(int slot, int chip_n, int bits);
 void send_shutdown(int slot, int chip_n);
 
+int bitfury_set_clock_bits(struct cgpu_info *cgpu, int slot, int chip, int bits);
 
 #endif /* __LIBBITFURY_H__ */

@@ -485,7 +485,7 @@ struct cgpu_info {
 
 #ifdef USE_BITFURY
 	int chip_n;
-	struct bitfury_device devices[200]; // TODO Move somewhere to appropriate place
+	struct bitfury_device *devices; // TODO Move somewhere to appropriate place
 #endif
 
 	enum dev_enable deven;

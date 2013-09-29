@@ -29,6 +29,7 @@
 #include <unistd.h>
 #include <sha2.h>
 #include "libbitfury.h"
+#include "libbitfury_int.h"
 #include "util.h"
 #include "config.h"
 
@@ -55,7 +56,7 @@ static void bitfury_detect(void)
 	bitfury_info->threads = 1;
 
 	applog(LOG_INFO, "INFO: bitfury_detect");
-	chip_n = libbitfury_detectChips(bitfury_info->devices);
+	chip_n = libbitfury_detectChips(&bitfury_info->devices);
 	if (!chip_n) {
 		applog(LOG_WARNING, "No Bitfury chips detected!");
 		return;
@@ -105,7 +106,6 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	int nonces_cnt;
 	struct timespec td;
 	struct timespec ts_now;
-	static int reinit_cnt = 0;
 
 	devices = thr->cgpu->devices;
 	chip_n = thr->cgpu->chip_n;
@@ -124,6 +124,7 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	}
 	first = 0;
 
+#if 0
 	for (chip = 0; chip < chip_n; chip++) {
 		dev = &devices[chip];
 		dev->job_switched = 0;
@@ -135,11 +136,15 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			work_to_payload(&(dev->payload), dev->work);
 		}
 	}
+#endif
 
+	if (!first)
+	cgsleep_ms(250);
+
+	clock_gettime(CLOCK_REALTIME, &ts_now);
 	libbitfury_sendHashData(thr, devices, chip_n);
 
 	cgtime(&now);
-	clock_gettime(CLOCK_REALTIME, &ts_now);
 
 	chip = 0;
 	for (;chip < chip_n; chip++) {
@@ -151,17 +156,20 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			struct work *work = dev->work;
 			struct work *owork = dev->owork;
 			struct work *o2work = dev->o2work;
+
+			dev->job_switched = 0;
+
 			for (j = dev->results_n-1; j >= 0; j--) {
 				if (owork) {
 					nonces_cnt += bitfury_submitNonce(thr, dev, &now, owork, bswap_32(res[j]));
 				}
 			}
-			dev->results_n = 0;
-			dev->job_switched = 0;
-			if ((dev->old_num > 0) && o2work)
+
+			if ((dev->old_num > 0) && o2work) {
 				for(j = 0; j < dev->old_num; j++) {
 					nonces_cnt += bitfury_submitNonce(thr, dev, &now, o2work, bswap_32(dev->old_nonce[j]));
 				}
+			}
 
 			if (dev->future_num > 0)
 				for(j=0; j < dev->future_num; j++) {
@@ -174,8 +182,27 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			dev->o2work = dev->owork;
 			dev->owork = dev->work;
 			dev->work = NULL;
+			
+			dev->old_num = 0;
+			dev->results_n = 0; //dev->future_num;
+			dev->future_num = 0;
+			
 			hashes += 0xffffffffull * nonces_cnt;
 			dev->matching_work += nonces_cnt;
+
+			if(dev->osc6_bits != dev->osc6_req)
+				send_reinit(dev->slot, dev->fasync, dev->osc6_bits = dev->osc6_req);
+			else
+			if(dev->mhz < 200 && dev->mhz2 < 200) { 
+				applog(LOG_WARNING, "Chip %d:%d frequency drop: %d Mhz, clock reinit to %d bits!", dev->slot, dev->fasync, dev->mhz, dev->osc6_bits);
+//				send_shutdown(dev->slot, dev->fasync);
+//				cgsleep_ms(50);
+				send_reinit(dev->slot, dev->fasync, dev->osc6_bits);
+				cgsleep_ms(5);
+				send_freq(dev->slot, dev->fasync, dev->osc6_bits - 1);
+				cgsleep_ms(5);
+				send_freq(dev->slot, dev->fasync, dev->osc6_bits);
+			}
 		}
 
 		td = t_diff(dev->ts1, ts_now);
@@ -193,8 +220,15 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			dev->ts1 = ts_now;
 		}
 	}
-//	cgsleep_ms(10);
-
+// 
+	clock_gettime(CLOCK_REALTIME, &td);
+	td = t_diff(ts_now,td);
+	static unsigned count, nsec;
+	nsec += td.tv_nsec;
+	if (!(++count&255)) {
+	    applog(LOG_WARNING, "Avg scan time %.3fms",nsec/count/1000000.);
+	    count = nsec = 0;
+	}
 	return hashes;
 }
 
@@ -203,7 +237,7 @@ int calc_stat(time_t * stat_ts, time_t stat, struct timeval now) {
 	int j;
 	int shares_found = 0;
 	for(j = 0; j < BITFURY_STAT_N; j++) {
-		if (now.tv_sec - stat_ts[j] < stat) {
+		if (now.tv_sec - stat_ts[j] <= stat) {
 			shares_found++;
 		}
 	}
@@ -347,10 +381,10 @@ static struct api_data *bitfury_api_stats(struct cgpu_info *cgpu)
 		root = api_add_uint(root, mcw, &(devices[i].hw_errors), false);
 		total_hw += devices[i].hw_errors;
 	}
-//	for (i = 0; i < cgpu->chip_n; i++) {
-//		sprintf(mcw, "mhz_%d_%d", devices[i].slot, devices[i].fasync);
-//		root = api_add_double(root, mcw, &(devices[i].mhz), false);
-//	}
+	for (i = 0; i < cgpu->chip_n; i++) {
+		sprintf(mcw, "mhz_%d_%d", devices[i].slot, devices[i].fasync);
+		root = api_add_uint(root, mcw, &(devices[i].mhz), false);
+	}
 	for (i = 0; i < cgpu->chip_n; i++) {
 		shares_found = calc_stat(devices[i].stat_ts, BITFURY_API_STATS, now);
 		ghash = shares_to_ghashes(shares_found, BITFURY_API_STATS);
@@ -378,6 +412,49 @@ bool bitfury_init(struct thr_info *thr)
 	return true;
 }
 
+static bool bitfury_queue_full(struct cgpu_info * cgpu)
+{
+	int chip;
+	for (chip = 0; chip < cgpu->chip_n; chip++) {
+	    if (!cgpu->devices[chip].work) {
+		cgpu->devices[chip].work = get_queued(cgpu);
+		if (cgpu->devices[chip].work)
+		    work_to_payload(&(cgpu->devices[chip].payload), cgpu->devices[chip].work);
+		else 
+		    return false;
+	    }
+	}
+	return true;
+}
+
+static void bitfury_flush_work(struct cgpu_info *cgpu)
+{
+//	cgpu->queued = 0;
+}
+
+int bitfury_set_clock_bits(struct cgpu_info *cgpu, int slot, int chip, int bits) {
+
+	if (bits < 52 || bits > 57) {
+		return 2;
+	}
+
+	struct bitfury_device *devices = cgpu->devices;
+	int chip_n = cgpu->chip_n;
+	int i;
+
+	for (i = 0; i < chip_n; i++) {
+		if ( (devices[i].slot == slot) && (devices[i].fasync == chip) ) 
+			break;
+	}
+
+	if (i == chip_n)
+		return 3;
+	
+	devices[i].osc6_req = bits;
+	return 0;
+}
+
+
 struct device_drv bitfury_drv = {
 	.dname = "bitfury_gpio",
 	.name = "BFY",
@@ -388,5 +465,7 @@ struct device_drv bitfury_drv = {
 	.thread_shutdown = bitfury_shutdown,
 	.minerloop = hash_queued_work,
 	.get_api_stats = bitfury_api_stats,
+	.queue_full = bitfury_queue_full,
+	.flush_work = bitfury_flush_work,
 };
 

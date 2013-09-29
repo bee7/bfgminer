@@ -33,7 +33,7 @@
 #include "util.h"
 #include "driver-cpu.h" /* for algo_names[], TODO: re-factor dependency */
 
-#if defined(USE_AVALON) || defined(USE_BITFORCE) || defined(USE_ICARUS) || defined(USE_MODMINER) || defined(USE_X6500) || defined(USE_ZTEX)
+#if defined(USE_AVALON) || defined(USE_BITFORCE) || defined(USE_ICARUS) || defined(USE_MODMINER) || defined(USE_X6500) || defined(USE_ZTEX) || defined(USE_BITFURY)
 #define HAVE_AN_FPGA 1
 #endif
 
@@ -109,6 +109,9 @@ static const char *DEVICECODE = ""
 #endif
 #ifdef USE_MODMINER
 			"MMQ "
+#endif
+#ifdef USE_MODMINER
+			"BFY "
 #endif
 #ifdef WANT_CPUMINE
 			"CPU "
@@ -332,6 +335,13 @@ static const char *JSON_PARAMETER = "parameter";
 
 #define MSG_DEVSCAN 0x100
 
+#ifdef USE_BITFURY
+#define MSG_OSCBITSRANGE 101
+#define MSG_CHIPRANGE 102
+#define MSG_SETOSCBITS 103
+#define MSG_SETOSCBITS_NOPAR 104
+#endif
+
 enum code_severity {
 	SEVERITY_ERR,
 	SEVERITY_WARN,
@@ -514,6 +524,12 @@ struct CODES {
  { SEVERITY_SUCC,  MSG_ZERSUM,	PARAM_STR,	"Zeroed %s stats with summary" },
  { SEVERITY_SUCC,  MSG_ZERNOSUM, PARAM_STR,	"Zeroed %s stats without summary" },
  { SEVERITY_SUCC,  MSG_DEVSCAN, PARAM_COUNT,	"Added %d new device(s)" },
+#ifdef USE_BITFURY
+ { SEVERITY_SUCC,  MSG_SETOSCBITS, PARAM_COUNT,     "Clock-bit set to %d" },
+ { SEVERITY_ERR,   MSG_OSCBITSRANGE, PARAM_NONE,  "Clock-bit range error (must be in range 52-56)" },
+ { SEVERITY_ERR,   MSG_OSCBITSRANGE, PARAM_NONE,   "Chip index range error" },
+ { SEVERITY_ERR,   MSG_SETOSCBITS_NOPAR, PARAM_NONE,   "Parameter required (<slot>,<chip>,<bits>)" },
+#endif
  { SEVERITY_FAIL, 0, 0, NULL }
 };
 
@@ -3229,6 +3245,56 @@ static void dozero(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *p
 		message(io_data, MSG_ZERNOSUM, 0, all ? "All" : "BestShare", isjson);
 }
 
+#ifdef USE_BITFURY
+static void set_clock_bits(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group) //++++++++++++++++++++++++++++
+{
+	struct cgpu_info *cgpu;
+	int value;
+	int slot_idx;
+	int chip_idx;
+	int osc_bits;
+	char *to = NULL;
+	char *tc = NULL;
+	int i = 0;
+
+	if(param == NULL) {
+		message(io_data, MSG_SETOSCBITS_NOPAR, 0, NULL, isjson);
+		return;
+	}
+
+	while (param[i] != '\0') {
+		i++;
+		if (param[i] != ',') continue;
+		tc = param+i+1;
+		param[i] = 0;
+		int k = 0;
+		while (tc[k] != '\0') {
+			k++;
+			if (tc[k] != ',') continue;
+			to = tc+k+1;
+			tc[k] = '\0';
+			break;
+		}
+		break;
+	}
+	if (!tc || !to)
+		return;
+	slot_idx = atoi(param);
+	chip_idx = atoi(tc);
+	osc_bits = atoi(to);
+	cgpu = get_devices(0);
+
+	i = bitfury_set_clock_bits(cgpu, slot_idx, chip_idx, osc_bits);
+
+	if (i == 0) 
+	    message(io_data, MSG_SETOSCBITS, osc_bits, NULL, isjson);
+	else
+	    message(io_data, MSG_SETOSCBITS+i, 0, NULL, isjson);
+}
+#endif
+
+
+
 static void checkcommand(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, char group);
 
 struct CMDS {
@@ -3291,6 +3357,9 @@ struct CMDS {
 	{ "setconfig",		setconfig,	true },
 #ifdef HAVE_AN_FPGA
 	{ "pgaset",		pgaset,		true },
+#endif
+#ifdef USE_BITFURY
+        { "setclkb",            set_clock_bits, false },
 #endif
 	{ "zero",		dozero,		true },
 	{ NULL,			NULL,		false }

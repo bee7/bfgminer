@@ -33,6 +33,7 @@
 #include "miner.h"
 #include "tm_i2c.h"
 #include "libbitfury.h"
+#include "libbitfury_int.h"
 
 #include "spidevc.h"
 #include "sha2.h"
@@ -329,11 +330,11 @@ int detect_chip(int chip_n) {
 	return 0;
 }
 
-int libbitfury_detectChips(struct bitfury_device *devices) {
+int libbitfury_detectChips(struct bitfury_device **devices) {
 	int n = 0;
 	int i;
-	static int slot_on[BITFURY_MAXBANKS];
-	struct timespec t1, t2;
+	int slot_on[BITFURY_MAXBANKS];
+	int slot_chips[BITFURY_MAXBANKS];
 
 	if (tm_i2c_init() < 0) {
 		printf("I2C init error\n");
@@ -349,7 +350,6 @@ int libbitfury_detectChips(struct bitfury_device *devices) {
 		slot_on[i] = 0;
 	}
 
-	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
 	for (i = 0; i < BITFURY_MAXBANKS; i++) {
 		int slot_detected = tm_i2c_detect(i) != -1;
 		slot_on[i] = slot_detected;
@@ -357,25 +357,41 @@ int libbitfury_detectChips(struct bitfury_device *devices) {
 		cgsleep_ms(1);
 	}
 
-	for (i = 0; i < BITFURY_MAXBANKS; i++) {
-		int chip_n = 0;
+	for (n = i = 0; i < BITFURY_MAXBANKS; i++) {
+		slot_chips[i] = 0;
 		int chip_detected;
 		tm_i2c_set_oe(i);
 		do {
-			chip_detected = detect_chip(chip_n);
+			chip_detected = detect_chip(slot_chips[i]);
 			if (chip_detected) {
 				applog(LOG_WARNING, "BFY slot: %d, chip #%d detected", i, n);
-				devices[n].slot = i;
-				devices[n].fasync = chip_n;
-				n++;
-				chip_n++;
+				slot_chips[i]++;
 			}
 		} while (chip_detected);
 		tm_i2c_clear_oe(i);
+		n += slot_chips[i];
+	}
+	
+	if (!n) return 0;
+	
+	struct  bitfury_device *devs = calloc(n, sizeof(struct bitfury_device));
+
+	struct timespec time;
+	clock_gettime(CLOCK_REALTIME, &(time));
+	
+	for (n = i = 0; i < BITFURY_MAXBANKS; i++) {
+		int chip_n;
+		for (chip_n = 0; chip_n < slot_chips[i]; chip_n++) {
+			devs[n].slot = i;
+			devs[n].fasync = chip_n;
+			devs[n].time = time;
+			devs[n].mhz2 = devs[n].mhz = 200;
+			n++;
+		}
 	}
 
-	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
-
+	*devices = devs;
+	
 	return n;
 }
 
@@ -463,57 +479,16 @@ void work_to_payload(struct bitfury_payload *p, struct work *w) {
 	p->nbits = bswap_32(*(unsigned *)(flipped_data + 72));
 }
 
-unsigned check_nonce (struct bitfury_payload *op, unsigned pn) {
-
-	if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) return pn;
-	else if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000)) return pn - 0x00400000;
-	else if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000)) return pn - 0x00800000;
-	else if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000)) return pn + 0x02800000;
-	else if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000)) return pn + 0x02C00000;
-	else if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000)) return pn + 0x00400000;
-	else return 0;
-
-}
-
-unsigned check_nonce2 (struct bitfury_payload *op, unsigned n) {
-	unsigned pn;
-	unsigned nonce = decnonce(n);
-	unsigned coor;
-	int x;
-	int y;
-
-	if((n & 0xff) < 0x1c) {
-		pn = nonce - 0x400000; //+mod[2];
-		coor = ((pn>>29) & 0x07)|(((pn)>>19) & 0x3F8);
-		x = coor % 24;
-		y = coor / 24;
-		//should test for bad coordinate and return if bad;
-		if(y < 36) { // 3 out of 24 cases
-			if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) {
-				return pn;
-			}
-		}
-	} else {
-		pn = nonce; // mod[0]
-		coor = ((pn>>29) & 0x07)|(((pn)>>19) & 0x3F8);
-		x = coor % 24;
-		y = coor / 24;
-		if(x>=17 && y<36) { // this or mod[1] , 7 out of 24 cases
-			if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) {
-				return pn;
-			}
-		}
-		pn = nonce-0x800000; // +mod[1];
-		coor = ((pn>>29) & 0x07)|(((pn)>>19) & 0x3F8);
-		x = coor % 24;
-		y = coor / 24;
-		if(((x>=1 && x<=4)||(x>=9 && x<=15)) && y<36){ // 11 out of 24 cases
-			if(rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) {
-				return pn;
-			}
-		}
-	}
-	return 0;
+static uint32_t check_hash(struct bitfury_payload *op, uint32_t pn) {
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000)) return pn - 0x00800000;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) return pn;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000)) return pn - 0x00400000;
+#if 0
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000)) return pn + 0x02800000;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000)) return pn + 0x02C00000;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000)) return pn + 0x00400000;
+#endif
+	return ~0;
 }
 
 void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, int chip_n) {
@@ -535,18 +510,11 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 		struct bitfury_payload *o2p = &(d->o2payload);
 		struct timespec d_time;
 		struct timespec time;
-		int smart = 0;
-		int i;
 		int chip = d->fasync;
 		int slot = d->slot;
+		int i;
 
-		clock_gettime(CLOCK_REALTIME, &(time));
 
-		if(1) { // will add some timing code later
-			int i;
-			int results_num = 0;
-			int found = 0;
-			unsigned * results = d->results;
 
 			memcpy(atrvec, p, 20*4);
 			ms3_compute(atrvec);
@@ -556,61 +524,63 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 			spi_clear_buf(); spi_emit_break();
 			spi_emit_fasync(chip);
 			spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
-
 			spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
-			memcpy(newbuf, spi_getrxbuf() + 4 + chip, 17*4);
+			clock_gettime(CLOCK_REALTIME, &(time));
+			newbuf = (void*)(spi_getrxbuf() + 4 + chip);
 			tm_i2c_clear_oe(slot);
 
-			d->job_switched = (newbuf[16] != oldbuf[16]);
+			d->job_switched = (newbuf[16] != oldbuf[16]) && second_run;
 
-			d->old_num = 0;
-			d->future_num = 0;
-			if (op && o2p && d->job_switched) {
-        			for (i = 0; i < 16; i++) {
-        				if (oldbuf[i] != newbuf[i] ) {
+			for (i = 0; i < 16; i++) {
+				uint32_t pn = decnonce(newbuf[i]);
+					if ((newbuf[i] & 0xFF) == 0xE0)
+						continue;
+				if ((pn & 0xFFC00000) == 0xDF800000) {
+				    uint32_t counter = pn - 0xDF800000;
+				    if (d->job_switched) {
+					d_time = t_diff(d->time,time);
+					d->mhz2 = d->mhz;
+					d->mhz = ((1<<22)+counter-d->counter)*65/(d_time.tv_sec+d_time.tv_nsec*0.000000001)/1000000;
+					d->counter = counter;
+					d->time = time;
+				    }
+				    continue;
+				}
 
-						unsigned pn; //possible nonce
-						unsigned int s = 0; //TODO zero may be solution
-						int hw_error = 1;
+				if (oldbuf[i] != newbuf[i] && op) {
+					uint32_t s;
+					int good = 0;
 
-						if ((newbuf[i] & 0xFF) == 0xE0)
-							continue;
-						pn = newbuf[i];
-						s = check_nonce2(op, pn);
-						if (s) {
-							results[results_num++] = bswap_32(s);
-							found++;
-							hw_error = 0;
-						}
+					if ((s = check_hash(op, pn)) != ~0) {
+						good += 1;
+						d->results[d->results_n++] = bswap_32(s);
+					}
 
-						s = check_nonce2(o2p, pn);
-						if (s) {
-							d->old_nonce[d->old_num++] = bswap_32(s);
-							found++;
-							hw_error = 0;
-						}
+					if ((s = check_hash(o2p, pn)) != ~0) {
+						good += 1;
+						d->old_nonce[d->old_num++] = bswap_32(s);
+					}
 
-						s = check_nonce2(p, pn);
-						if (s) {
-							d->future_nonce[d->future_num++] = bswap_32(s);
-							found++;
-							hw_error = 0;
-						}
-						if (hw_error) {
-							d->hw_errors++;
-							inc_hw_errors2(thr, NULL, &pn);
-						}
+					if ((s = check_hash(p, pn)) != ~0) {
+						good += 1;
+						d->future_nonce[d->future_num++] = bswap_32(s);
+					}
+					
+					if (!good && second_run) {
+						d->hw_errors++;
+						inc_hw_errors2(thr, NULL, &pn);
 					}
 				}
+			}
+
+			memcpy(oldbuf, newbuf, 17 * 4);
+
+			if (d->job_switched) {
 				memcpy(o2p, op, sizeof(struct bitfury_payload));
 				memcpy(op, p, sizeof(struct bitfury_payload));
-				memcpy(oldbuf, newbuf, 17 * 4);
 			}
-			d->results_n = results_num;
-		}
 	}
 	second_run = 1;
-
 	return;
 }
 
