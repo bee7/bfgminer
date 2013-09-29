@@ -533,8 +533,6 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 
 			for (i = 0; i < 16; i++) {
 				uint32_t pn = decnonce(newbuf[i]);
-					if ((newbuf[i] & 0xFF) == 0xE0)
-						continue;
 				if ((pn & 0xFFC00000) == 0xDF800000) {
 				    uint32_t counter = pn - 0xDF800000;
 				    if (d->job_switched) {
@@ -546,7 +544,8 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 				    }
 				    continue;
 				}
-
+				if ((newbuf[i] & 0xFF) == 0xE0)
+					continue;
 				if (oldbuf[i] != newbuf[i] && op) {
 					uint32_t s;
 					int good = 0;
