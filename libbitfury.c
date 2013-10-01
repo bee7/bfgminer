@@ -104,7 +104,12 @@ unsigned atrvec[] = {
 
 };
 
+#if 0
 #define rotrFixed(x,y) (((x) >> (y)) | ((x) << (32-(y))))
+#else
+#define rotrFixed(x,y)  ({uint32_t ___d; asm ("ror %0, %1, #"#y : "=r" (___d) : "r" (x)); ___d;})
+#endif
+
 #define s0(x) (rotrFixed(x,7)^rotrFixed(x,18)^(x>>3))
 #define s1(x) (rotrFixed(x,17)^rotrFixed(x,19)^(x>>10))
 #define Ch(x,y,z) (z^(x&(y^z)))
@@ -374,7 +379,7 @@ int libbitfury_detectChips(struct bitfury_device **devices) {
 	
 	if (!n) return 0;
 	
-	struct  bitfury_device *devs = calloc(n, sizeof(struct bitfury_device));
+	struct  bitfury_device *devs = *devices = calloc(n, sizeof(struct bitfury_device));
 
 	struct timespec time;
 	clock_gettime(CLOCK_REALTIME, &(time));
@@ -382,16 +387,18 @@ int libbitfury_detectChips(struct bitfury_device **devices) {
 	for (n = i = 0; i < BITFURY_MAXBANKS; i++) {
 		int chip_n;
 		for (chip_n = 0; chip_n < slot_chips[i]; chip_n++) {
-			devs[n].slot = i;
-			devs[n].fasync = chip_n;
-			devs[n].time = time;
-			devs[n].mhz2 = devs[n].mhz = 200;
+			devs->slot = i;
+			devs->fasync = chip_n;
+			devs->time = time;
+			devs->mhz2 = devs->mhz = 200;
+			devs->payload = devs->payloads;
+			devs->opayload = devs->payloads+1;
+			devs->o2payload = devs->payloads+2;
+			devs++;
 			n++;
 		}
 	}
 
-	*devices = devs;
-	
 	return n;
 }
 
@@ -470,25 +477,23 @@ int rehash(const void *midstate, const uint32_t m7, const uint32_t ntime, const 
 void work_to_payload(struct bitfury_payload *p, struct work *w) {
 	unsigned char flipped_data[80];
 
-	memset(p, 0, sizeof(struct bitfury_payload));
+//	memset(p, 0, sizeof(struct bitfury_payload));
 	swap32yes(flipped_data, w->data, 80 / 4);
 
 	memcpy(p->midstate, w->midstate, 32);
 	p->m7 = bswap_32(*(unsigned *)(flipped_data + 64));
 	p->ntime = bswap_32(*(unsigned *)(flipped_data + 68));
 	p->nbits = bswap_32(*(unsigned *)(flipped_data + 72));
+	ms3_compute((void*)p);
+	p->work = w;
+	p->nnonces = p->snonces = 0;
 }
 
 static uint32_t check_hash(struct bitfury_payload *op, uint32_t pn) {
-	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000)) return pn - 0x00800000;
-	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) return pn;
-	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000)) return pn - 0x00400000;
-#if 0
-	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000)) return pn + 0x02800000;
-	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000)) return pn + 0x02C00000;
-	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000)) return pn + 0x00400000;
-#endif
-	return ~0;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000)) return (op->nonces[op->nnonces++] = pn - 0x00800000),1;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) return (op->nonces[op->nnonces++] = pn),1;
+	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000)) return (op->nonces[op->nnonces++] = pn - 0x00400000),1;
+	return 0;
 }
 
 void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, int chip_n) {
@@ -500,34 +505,31 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 
 //	clock_gettime(CLOCK_REALTIME, &(time));
 
-	for (chip_id = 0; chip_id < chip_n; chip_id++) {
-		unsigned char *hexstr;
-		struct bitfury_device *d = bf + chip_id;
-		unsigned *newbuf = d->newbuf;
+	struct bitfury_device *d = bf;
+	int slot = ~0;
+	
+	for (chip_id = 0; chip_id < chip_n; chip_id++, d++) {
+		unsigned *newbuf;
 		unsigned *oldbuf = d->oldbuf;
-		struct bitfury_payload *p = &(d->payload);
-		struct bitfury_payload *op = &(d->opayload);
-		struct bitfury_payload *o2p = &(d->o2payload);
+		struct bitfury_payload *p = d->payload;
+		struct bitfury_payload *op = d->opayload;
+		struct bitfury_payload *o2p = d->o2payload;
 		struct timespec d_time;
 		struct timespec time;
 		int chip = d->fasync;
-		int slot = d->slot;
 		int i;
 
-
-
-			memcpy(atrvec, p, 20*4);
-			ms3_compute(atrvec);
-
 			/* Programming next value */
-			tm_i2c_set_oe(slot);
+			if (slot != d->slot) {
+			    if (slot != ~0) tm_i2c_clear_oe(slot);
+			    tm_i2c_set_oe(slot = d->slot);
+			}
 			spi_clear_buf(); spi_emit_break();
 			spi_emit_fasync(chip);
-			spi_emit_data(0x3000, (void*)&atrvec[0], 19*4);
+			spi_emit_data(0x3000, (void*)p, 19*4);
 			spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
 			clock_gettime(CLOCK_REALTIME, &(time));
 			newbuf = (void*)(spi_getrxbuf() + 4 + chip);
-			tm_i2c_clear_oe(slot);
 
 			d->job_switched = (newbuf[16] != oldbuf[16]) && second_run;
 
@@ -546,24 +548,10 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 				}
 				if ((newbuf[i] & 0xFF) == 0xE0)
 					continue;
-				if (oldbuf[i] != newbuf[i] && op) {
-					uint32_t s;
-					int good = 0;
-
-					if ((s = check_hash(op, pn)) != ~0) {
-						good += 1;
-						d->results[d->results_n++] = bswap_32(s);
-					}
-
-					if ((s = check_hash(o2p, pn)) != ~0) {
-						good += 1;
-						d->old_nonce[d->old_num++] = bswap_32(s);
-					}
-
-					if ((s = check_hash(p, pn)) != ~0) {
-						good += 1;
-						d->future_nonce[d->future_num++] = bswap_32(s);
-					}
+				if (oldbuf[i] != newbuf[i]) {
+					int good = check_hash(op, pn);
+					good += check_hash(o2p, pn);
+					good += check_hash(p, pn);
 					
 					if (!good && second_run) {
 						d->hw_errors++;
@@ -574,11 +562,8 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 
 			memcpy(oldbuf, newbuf, 17 * 4);
 
-			if (d->job_switched) {
-				memcpy(o2p, op, sizeof(struct bitfury_payload));
-				memcpy(op, p, sizeof(struct bitfury_payload));
-			}
 	}
+	if (slot != ~0) tm_i2c_clear_oe(slot);
 	second_run = 1;
 	return;
 }

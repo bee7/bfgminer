@@ -42,7 +42,6 @@ struct work;
 
 int libbitfury_readHashData(unsigned int *res);
 void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, int chip_n);
-void work_to_payload(struct bitfury_payload *p, struct work *w);
 struct timespec t_diff(struct timespec start, struct timespec end);
 int libbitfury_detectChips(struct bitfury_device **devices);
 int libbitfury_shutdownChips(struct bitfury_device *devices, int chip_n);

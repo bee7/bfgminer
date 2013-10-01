@@ -8,29 +8,26 @@ struct bitfury_payload {
 	unsigned ntime;
 	unsigned nbits;
 	unsigned nnonce;
+	struct work * work;
+	int nnonces;
+	int snonces;
+	uint32_t nonces[16];
 };
 
 struct bitfury_device {
 	unsigned osc6_req;
 	unsigned osc6_bits;
 	unsigned osc6_bits_setpoint;
-	unsigned newbuf[17];
 	unsigned oldbuf[17];
-	struct work * work;
-	struct work * owork;
-	struct work * o2work;
 	int job_switched;
-	struct bitfury_payload payload;
-	struct bitfury_payload opayload;
-	struct bitfury_payload o2payload;
-	unsigned int results[16];
-	int results_n;
+
+	struct bitfury_payload *payload;
+	struct bitfury_payload *opayload;
+	struct bitfury_payload *o2payload;
+	struct bitfury_payload payloads[3];
+	
 	time_t stat_ts[BITFURY_STAT_N];
 	unsigned int stat_counter;
-	unsigned int future_nonce[16];
-	unsigned int old_nonce[16];
-	int future_num;
-	int old_num;
 	struct timespec timer1;
 	struct timespec otimer1;
 	struct timespec ts1;
@@ -42,12 +39,11 @@ struct bitfury_device {
 	unsigned fasync;
 	unsigned hw_errors;
 	unsigned int matching_work;
-	unsigned int nonces[32];
-	int current_nonce;
-	unsigned atrvec[20];
 	unsigned mhz,mhz2;
 	uint32_t counter, counter2;
 	struct timespec time;
 };
+
+void work_to_payload(struct bitfury_payload *p, struct work *w);
 
 #endif

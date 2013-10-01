@@ -73,18 +73,17 @@ static uint32_t bitfury_checkNonce(struct work *work, uint32_t nonce)
 	applog(LOG_INFO, "INFO: bitfury_checkNonce");
 }
 
-static int bitfury_submitNonce(struct thr_info *thr, struct bitfury_device *device, struct timeval *now, struct work *owork, uint32_t nonce)
+static int bitfury_submitNonces(struct thr_info *thr, struct bitfury_device *device, struct timeval *now, struct bitfury_payload *payload)
 {
-	if(!submit_nonce(thr, owork, nonce))
-		return 0;
-	device->nonces[device->current_nonce++] = nonce;
-	if(device->current_nonce > 32)
-		device->current_nonce = 0;
-	device->stat_ts[device->stat_counter++] = now->tv_sec;
-	if (device->stat_counter == BITFURY_STAT_N)
-		device->stat_counter = 0;
-
-	return 1;
+	if (!payload->work) return 0;
+	int good = 0;
+	for (;payload->snonces < payload->nnonces; payload->snonces++)
+	    if(submit_nonce(thr, payload->work, payload->nonces[payload->snonces])) {
+		good++;
+		device->stat_ts[device->stat_counter] = now->tv_sec;
+		device->stat_counter = (device->stat_counter+1) % BITFURY_STAT_N;
+	    }
+	return good;
 }
 
 static int64_t bitfury_scanHash(struct thr_info *thr)
@@ -152,40 +151,22 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 		dev = &devices[chip];
 		if (dev->job_switched) {
 			int j;
-			int *res = dev->results;
-			struct work *work = dev->work;
-			struct work *owork = dev->owork;
-			struct work *o2work = dev->o2work;
 
 			dev->job_switched = 0;
 
-			for (j = dev->results_n-1; j >= 0; j--) {
-				if (owork) {
-					nonces_cnt += bitfury_submitNonce(thr, dev, &now, owork, bswap_32(res[j]));
-				}
+			nonces_cnt = bitfury_submitNonces(thr, dev, &now, dev->payload);
+			nonces_cnt += bitfury_submitNonces(thr, dev, &now, dev->opayload);
+			nonces_cnt += bitfury_submitNonces(thr, dev, &now, dev->o2payload);
+
+			if (dev->o2payload->work) {
+				work_completed(thr->cgpu, dev->o2payload->work);
+				dev->o2payload->work = NULL;
 			}
-
-			if ((dev->old_num > 0) && o2work) {
-				for(j = 0; j < dev->old_num; j++) {
-					nonces_cnt += bitfury_submitNonce(thr, dev, &now, o2work, bswap_32(dev->old_nonce[j]));
-				}
-			}
-
-			if (dev->future_num > 0)
-				for(j=0; j < dev->future_num; j++) {
-				        nonces_cnt += bitfury_submitNonce(thr, dev, &now, work, bswap_32(dev->future_nonce[j]));
-				}
-
-			if (o2work)
-				work_completed(thr->cgpu, o2work);
-
-			dev->o2work = dev->owork;
-			dev->owork = dev->work;
-			dev->work = NULL;
 			
-			dev->old_num = 0;
-			dev->results_n = 0; //dev->future_num;
-			dev->future_num = 0;
+			struct bitfury_payload *temp = dev->o2payload;
+			dev->o2payload = dev->opayload;
+			dev->opayload = dev->payload;
+			dev->payload = temp;
 			
 			hashes += 0xffffffffull * nonces_cnt;
 			dev->matching_work += nonces_cnt;
@@ -224,9 +205,9 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	clock_gettime(CLOCK_REALTIME, &td);
 	td = t_diff(ts_now,td);
 	static unsigned count, nsec;
-	nsec += td.tv_nsec;
+	nsec += td.tv_nsec/1000;
 	if (!(++count&255)) {
-	    applog(LOG_WARNING, "Avg scan time %.3fms",nsec/count/1000000.);
+	    applog(LOG_WARNING, "Avg scan time %.3fms",nsec/count/1000.);
 	    count = nsec = 0;
 	}
 	return hashes;
@@ -416,10 +397,10 @@ static bool bitfury_queue_full(struct cgpu_info * cgpu)
 {
 	int chip;
 	for (chip = 0; chip < cgpu->chip_n; chip++) {
-	    if (!cgpu->devices[chip].work) {
-		cgpu->devices[chip].work = get_queued(cgpu);
-		if (cgpu->devices[chip].work)
-		    work_to_payload(&(cgpu->devices[chip].payload), cgpu->devices[chip].work);
+	    if (!cgpu->devices[chip].payload->work) {
+		struct work *work = get_queued(cgpu);
+		if (work)
+		    work_to_payload(cgpu->devices[chip].payload, work);
 		else 
 		    return false;
 	    }
