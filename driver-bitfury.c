@@ -149,14 +149,16 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	for (;chip < chip_n; chip++) {
 		nonces_cnt = 0;
 		dev = &devices[chip];
-		if (dev->job_switched) {
-			int j;
-
-			dev->job_switched = 0;
 
 			nonces_cnt = bitfury_submitNonces(thr, dev, &now, dev->payload);
 			nonces_cnt += bitfury_submitNonces(thr, dev, &now, dev->opayload);
 			nonces_cnt += bitfury_submitNonces(thr, dev, &now, dev->o2payload);
+			hashes += 0xffffffffull * nonces_cnt;
+			dev->matching_work += nonces_cnt;
+
+		if (dev->job_switched) {
+
+			dev->job_switched = 0;
 
 			if (dev->o2payload->work) {
 				work_completed(thr->cgpu, dev->o2payload->work);
@@ -168,8 +170,6 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			dev->opayload = dev->payload;
 			dev->payload = temp;
 			
-			hashes += 0xffffffffull * nonces_cnt;
-			dev->matching_work += nonces_cnt;
 
 			if(dev->osc6_bits != dev->osc6_req)
 				send_reinit(dev->slot, dev->fasync, dev->osc6_bits = dev->osc6_req);

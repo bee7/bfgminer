@@ -506,30 +506,35 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 //	clock_gettime(CLOCK_REALTIME, &(time));
 
 	struct bitfury_device *d = bf;
-	int slot = ~0;
 	
-	for (chip_id = 0; chip_id < chip_n; chip_id++, d++) {
+	for (chip_id = 0; chip_id < chip_n;) {
 		unsigned *newbuf;
-		unsigned *oldbuf = d->oldbuf;
-		struct bitfury_payload *p = d->payload;
-		struct bitfury_payload *op = d->opayload;
-		struct bitfury_payload *o2p = d->o2payload;
 		struct timespec d_time;
 		struct timespec time;
-		int chip = d->fasync;
+		int slot = d->slot;
+		int chip;
 		int i;
+			
+		tm_i2c_set_oe(slot);
+		spi_clear_buf(); spi_emit_break();
+		for (chip = 0; chip+chip_id < chip_n && slot == d->slot; chip++, d++) {
+		    spi_emit_data(0x3000, (void*)d->payload, 19*4);
+		    spi_emit_fasync(1);
+		}
+		
+		d -= chip;
+		spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
+		clock_gettime(CLOCK_REALTIME, &(time));
+		tm_i2c_clear_oe(slot);
+		
+		newbuf = (void*)(spi_getrxbuf() + 4);
 
-			/* Programming next value */
-			if (slot != d->slot) {
-			    if (slot != ~0) tm_i2c_clear_oe(slot);
-			    tm_i2c_set_oe(slot = d->slot);
-			}
-			spi_clear_buf(); spi_emit_break();
-			spi_emit_fasync(chip);
-			spi_emit_data(0x3000, (void*)p, 19*4);
-			spi_txrx(spi_gettxbuf(), spi_getrxbuf(), spi_getbufsz());
-			clock_gettime(CLOCK_REALTIME, &(time));
-			newbuf = (void*)(spi_getrxbuf() + 4 + chip);
+		while (chip--) {
+			struct bitfury_payload *p = d->payload;
+			struct bitfury_payload *op = d->opayload;
+			struct bitfury_payload *o2p = d->o2payload;
+			
+			unsigned *oldbuf = d->oldbuf;
 
 			d->job_switched = (newbuf[16] != oldbuf[16]) && second_run;
 
@@ -561,9 +566,11 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 			}
 
 			memcpy(oldbuf, newbuf, 17 * 4);
-
+			newbuf = (void*)newbuf+4+19*4;
+			chip_id++;
+			d++;
+		}
 	}
-	if (slot != ~0) tm_i2c_clear_oe(slot);
 	second_run = 1;
 	return;
 }
