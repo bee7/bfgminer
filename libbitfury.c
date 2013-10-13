@@ -490,6 +490,10 @@ void work_to_payload(struct bitfury_payload *p, struct work *w) {
 }
 
 static uint32_t check_hash(struct bitfury_payload *op, uint32_t pn) {
+	int i;
+	register uint32_t temp;
+	for (i = 0; i < op->nnonces; i++)
+	    if ((temp = pn-op->nonces[i]) == 0 || temp == 0x00800000 || temp == 0x00400000) return 1;
 	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000)) return (op->nonces[op->nnonces++] = pn - 0x00800000),1;
 	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn)) return (op->nonces[op->nnonces++] = pn),1;
 	if (rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000)) return (op->nonces[op->nnonces++] = pn - 0x00400000),1;
@@ -536,7 +540,13 @@ void libbitfury_sendHashData(struct thr_info *thr, struct bitfury_device *bf, in
 			
 			unsigned *oldbuf = d->oldbuf;
 
+			if (unlikely((uint32_t)(newbuf[16]+1)>1)) {
+			    applog(LOG_WARNING, "newbuf[16]:%08x",newbuf[16]);
+			    newbuf[16] = oldbuf[16];
+			    d->job_switched = 0;
+			} else
 			d->job_switched = (newbuf[16] != oldbuf[16]) && second_run;
+			
 
 			for (i = 0; i < 16; i++) {
 				uint32_t pn = decnonce(newbuf[i]);
